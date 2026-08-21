@@ -1,0 +1,1233 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Windows Event Log</title>
+<script src="/static/chart.umd.js"></script>
+<style>
+  :root {
+    --bg:        #0b0e0d;
+    --panel:     #121715;
+    --border:    #1f2b26;
+    --text:      #d7e0da;
+    --dim:       #6b7d74;
+    --mono:      'IBM Plex Mono', 'Consolas', monospace;
+    --sans:      'IBM Plex Sans', 'Segoe UI', sans-serif;
+    --ok:        #3ecf8e;
+    --info:      #4fa3d1;
+    --warn:      #e0b94f;
+    --error:     #e0703f;
+    --critical:  #d8455c;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+  }
+
+  header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    padding: 20px 28px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  header h1 {
+    font-family: var(--mono);
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin: 0;
+  }
+
+  header h1 span { color: var(--ok); }
+
+  #conn-status {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--dim);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  #conn-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--dim);
+    transition: background 0.3s;
+  }
+
+  #conn-dot.live {
+    background: var(--ok);
+    box-shadow: 0 0 6px var(--ok);
+  }
+
+  main {
+    padding: 24px 28px 80px;
+    max-width: 1400px;
+    margin: 0 auto;
+  }
+
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 14px;
+    margin-bottom: 16px;
+  }
+
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 16px 18px;
+    cursor: pointer;
+    transition: border-color 0.15s, transform 0.12s, background 0.15s;
+    user-select: none;
+  }
+
+  .card:hover {
+    border-color: var(--ok);
+    transform: translateY(-1px);
+  }
+
+  .card.active {
+    border-color: var(--ok);
+    background: rgba(62,207,142,0.08);
+    box-shadow: inset 0 0 0 1px rgba(62,207,142,0.25);
+  }
+
+  .card .label {
+    font-family: var(--mono);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--dim);
+    margin-bottom: 8px;
+  }
+
+  .card .hint {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--dim);
+    margin-top: 6px;
+    opacity: 0.8;
+  }
+
+  .card .value {
+    font-family: var(--mono);
+    font-size: 28px;
+    font-weight: 600;
+  }
+
+  .card.critical .value { color: var(--critical); }
+  .card.ok .value { color: var(--ok); }
+
+  .active-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 18px;
+    min-height: 28px;
+  }
+
+  .active-filters .af-label {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--dim);
+    text-transform: uppercase;
+  }
+
+  .af-chip {
+    font-family: var(--mono);
+    font-size: 11px;
+    background: rgba(62,207,142,0.1);
+    border: 1px solid rgba(62,207,142,0.35);
+    color: var(--ok);
+    border-radius: 12px;
+    padding: 4px 10px;
+  }
+
+  .af-clear {
+    font-family: var(--mono);
+    font-size: 11px;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--dim);
+    border-radius: 12px;
+    padding: 4px 10px;
+    cursor: pointer;
+  }
+
+  .af-clear:hover { color: var(--text); border-color: var(--ok); }
+
+  .chart-row {
+    display: grid;
+    grid-template-columns: 2fr 1fr;
+    gap: 14px;
+    margin-bottom: 24px;
+  }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 18px;
+  }
+
+  .panel h2 {
+    font-family: var(--mono);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--dim);
+    margin: 0 0 14px 0;
+    font-weight: 600;
+  }
+
+  .chart-wrap { height: 220px; position: relative; }
+
+  #compare-panel { display: none; margin-bottom: 24px; }
+  #compare-panel.open { display: block; }
+
+  .compare-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+  }
+
+  .compare-box {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 14px 16px;
+  }
+
+  .compare-box .title {
+    font-family: var(--mono);
+    font-size: 11px;
+    text-transform: uppercase;
+    color: var(--dim);
+    margin-bottom: 8px;
+  }
+
+  .compare-box .big {
+    font-family: var(--mono);
+    font-size: 26px;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+
+  .compare-list {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--dim);
+    line-height: 1.7;
+  }
+
+  .filters {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 14px;
+    flex-wrap: wrap;
+  }
+
+  .filters select, .filters input {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 12px;
+    padding: 8px 10px;
+    border-radius: 3px;
+  }
+
+  .filters input[type="text"] { flex: 1; min-width: 180px; }
+  .filters select:focus, .filters input:focus {
+    outline: none;
+    border-color: var(--ok);
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--mono);
+    font-size: 12.5px;
+  }
+
+  thead th {
+    text-align: left;
+    color: var(--dim);
+    text-transform: uppercase;
+    font-size: 10.5px;
+    letter-spacing: 0.05em;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+    font-weight: 600;
+  }
+
+  tbody td {
+    padding: 9px 10px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+
+  tbody tr:hover { background: rgba(255,255,255,0.02); }
+  tbody tr { cursor: pointer; }
+
+  .lvl {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: 10.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+
+  .lvl-Critical { background: rgba(216,69,92,0.15); color: var(--critical); }
+  .lvl-Error    { background: rgba(224,112,63,0.15); color: var(--error); }
+  .lvl-Warning  { background: rgba(224,185,79,0.15); color: var(--warn); }
+  .lvl-Information { background: rgba(79,163,209,0.15); color: var(--info); }
+
+  .msg-cell {
+    max-width: 320px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--dim);
+  }
+
+  #empty-state {
+    text-align: center;
+    padding: 40px;
+    color: var(--dim);
+    font-family: var(--mono);
+    font-size: 12px;
+    display: none;
+  }
+
+  .categories {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+  }
+
+  .chip {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 6px 12px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--dim);
+    cursor: pointer;
+    transition: border-color 0.15s, color 0.15s;
+  }
+
+  .chip:hover { border-color: var(--ok); color: var(--text); }
+  .chip.active {
+    border-color: var(--ok);
+    color: var(--ok);
+    background: rgba(62,207,142,0.08);
+  }
+
+  .chip .count {
+    background: var(--border);
+    color: var(--text);
+    border-radius: 10px;
+    padding: 1px 7px;
+    font-size: 10px;
+  }
+
+  .chip.active .count { background: var(--ok); color: #04140c; }
+
+  .modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    z-index: 50;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 60px 20px;
+  }
+
+  .modal-overlay.open { display: flex; }
+
+  .modal {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    width: 100%;
+    max-width: 720px;
+    max-height: 80vh;
+    overflow-y: auto;
+    padding: 24px 26px;
+  }
+
+  .modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 18px;
+  }
+
+  .modal-header .title {
+    font-family: var(--mono);
+    font-size: 15px;
+    font-weight: 600;
+  }
+
+  .modal-close {
+    background: none;
+    border: none;
+    color: var(--dim);
+    font-size: 20px;
+    cursor: pointer;
+    line-height: 1;
+  }
+
+  .modal-close:hover { color: var(--text); }
+
+  .detail-grid {
+    display: grid;
+    grid-template-columns: 130px 1fr;
+    gap: 10px 14px;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    margin-bottom: 18px;
+  }
+
+  .detail-grid .k { color: var(--dim); }
+  .detail-grid .v { color: var(--text); word-break: break-word; }
+
+  .modal-section-label {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--dim);
+    margin: 18px 0 8px 0;
+  }
+
+  .modal-message {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 12px 14px;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  #sysinfo-panel {
+    position: fixed;
+    bottom: 16px;
+    right: 16px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 16px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--dim);
+    z-index: 40;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+    min-width: 200px;
+  }
+
+  #sysinfo-panel .sysinfo-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text);
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 8px;
+    font-weight: 600;
+  }
+
+  #sysinfo-panel .sysinfo-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--ok);
+    box-shadow: 0 0 5px var(--ok);
+  }
+
+  #sysinfo-panel .row {
+    display: flex;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 2px 0;
+  }
+
+  #sysinfo-panel .row .v { color: var(--text); }
+
+  @media (max-width: 900px) {
+    .cards { grid-template-columns: repeat(2, 1fr); }
+    .chart-row, .compare-grid { grid-template-columns: 1fr; }
+  }
+
+  @media (max-width: 640px) {
+    #sysinfo-panel { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Windows <span>Event Log</span></h1>
+  <div id="conn-status"><div id="conn-dot"></div><span id="conn-text">bağlanıyor...</span></div>
+</header>
+
+<main>
+
+  <div class="cards">
+    <div class="card" id="card-total" data-card="total" title="Tüm eventleri göster">
+      <div class="label">Toplam Event</div>
+      <div class="value" id="stat-total">—</div>
+      <div class="hint">tıkla → tümü</div>
+    </div>
+    <div class="card ok" id="card-24h" data-card="24h" title="Son 24 saati filtrele">
+      <div class="label">Son 24 Saat</div>
+      <div class="value" id="stat-24h">—</div>
+      <div class="hint">tıkla → filtrele</div>
+    </div>
+    <div class="card critical" id="card-critical" data-card="critical" title="Kritik ve hataları filtrele">
+      <div class="label">Kritik / Hata (24s)</div>
+      <div class="value" id="stat-critical">—</div>
+      <div class="hint">tıkla → filtrele</div>
+    </div>
+    <div class="card" id="card-top" data-card="top" title="En sık Event ID'ye filtrele">
+      <div class="label">En Sık Event ID</div>
+      <div class="value" id="stat-top" style="font-size:18px;">—</div>
+      <div class="hint">tıkla → filtrele</div>
+    </div>
+    <div class="card" id="card-trend" data-card="compare" title="Bugün vs dün karşılaştırması">
+      <div class="label">Bugün vs Dün</div>
+      <div class="value" id="stat-trend" style="font-size:18px;">—</div>
+      <div class="hint">tıkla → karşılaştır</div>
+    </div>
+  </div>
+
+  <div class="active-filters" id="active-filters">
+    <span class="af-label">Aktif filtre:</span>
+    <span id="af-chips"></span>
+    <button class="af-clear" id="af-clear" type="button">Temizle</button>
+  </div>
+
+  <div class="panel" id="compare-panel">
+    <h2>Bugün vs Dün Karşılaştırması</h2>
+    <div class="compare-grid">
+      <div class="compare-box">
+        <div class="title">Bugün (son 24s)</div>
+        <div class="big" id="cmp-today">—</div>
+        <div class="compare-list" id="cmp-today-list"></div>
+      </div>
+      <div class="compare-box">
+        <div class="title">Dün (önceki 24s)</div>
+        <div class="big" id="cmp-yesterday">—</div>
+        <div class="compare-list" id="cmp-yesterday-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="chart-row">
+    <div class="panel">
+      <h2>Zaman İçinde Dağılım</h2>
+      <div class="chart-wrap"><canvas id="timelineChart"></canvas></div>
+    </div>
+    <div class="panel">
+      <h2>Seviyeye Göre Dağılım</h2>
+      <div class="chart-wrap"><canvas id="levelChart"></canvas></div>
+    </div>
+  </div>
+
+  <div class="chart-row">
+    <div class="panel">
+      <h2>En Sık Tekrarlanan Event'ler</h2>
+      <div class="chart-wrap"><canvas id="topEventsChart"></canvas></div>
+    </div>
+    <div class="panel">
+      <h2>Log / Kategori Dağılımı</h2>
+      <div class="chart-wrap"><canvas id="logTypeChart"></canvas></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Event Detayları</h2>
+    <div class="categories" id="category-chips"></div>
+    <div class="filters">
+      <select id="f-level">
+        <option value="">Tüm Seviyeler</option>
+        <option value="Critical">Critical</option>
+        <option value="Error">Error</option>
+        <option value="Warning">Warning</option>
+        <option value="Information">Information</option>
+      </select>
+      <select id="f-log">
+        <option value="">Tüm Log'lar</option>
+        <option value="System">System</option>
+        <option value="Application">Application</option>
+        <option value="Security">Security</option>
+      </select>
+      <select id="f-time">
+        <option value="">Tüm Zamanlar</option>
+        <option value="1h">Son 1 Saat</option>
+        <option value="3h">Son 3 Saat</option>
+        <option value="6h">Son 6 Saat</option>
+        <option value="12h">Son 12 Saat</option>
+        <option value="24h">Son 1 Gün</option>
+        <option value="7d">Son 1 Hafta</option>
+        <option value="30d">Son 1 Ay</option>
+        <option value="365d">Son 1 Yıl</option>
+      </select>
+      <input type="text" id="f-search" placeholder="Açıklama, mesaj, kaynak, Event ID..." />
+      <input type="text" id="f-error" placeholder="Hata kodu..." style="min-width:120px;flex:0;" />
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Zaman</th>
+          <th>Seviye</th>
+          <th>Kategori</th>
+          <th>Event ID</th>
+          <th>Kaynak</th>
+          <th>Hata</th>
+          <th>Açıklama</th>
+        </tr>
+      </thead>
+      <tbody id="events-body"></tbody>
+    </table>
+    <div id="empty-state">Filtreyle eşleşen kayıt bulunamadı.</div>
+  </div>
+
+</main>
+
+<div class="modal-overlay" id="modal-overlay">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="title" id="modal-title">Event Detayı</div>
+      <button class="modal-close" id="modal-close">&times;</button>
+    </div>
+    <div class="detail-grid" id="modal-detail-grid"></div>
+    <div class="modal-section-label">Açıklama</div>
+    <div class="modal-message" id="modal-description"></div>
+    <div class="modal-section-label">Event Data / Mesaj</div>
+    <div class="modal-message" id="modal-message"></div>
+    <div class="modal-section-label">Ham XML</div>
+    <div class="modal-message" id="modal-xml" style="max-height:180px;overflow:auto;font-size:11px;"></div>
+  </div>
+</div>
+
+<div id="sysinfo-panel">
+  <div class="sysinfo-title"><div class="sysinfo-dot"></div>İzlenen Makine</div>
+  <div class="row"><span class="k">Host</span><span class="v" id="sys-host">—</span></div>
+  <div class="row"><span class="k">IP</span><span class="v" id="sys-ip">—</span></div>
+  <div class="row"><span class="k">MAC</span><span class="v" id="sys-mac">—</span></div>
+</div>
+
+<script>
+const API_BASE = "";
+const WS_URL = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/live`;
+
+const state = {
+  level: "",
+  levels: "",
+  log_name: "",
+  source: "",
+  event_id: null,
+  search: "",
+  error_code: "",
+  timePreset: "",
+  start: null,
+  end: null,
+  card: null,
+  compare: false,
+  topEventId: null,
+  topEventLabel: null,
+};
+
+const levelColors = {
+  Critical: "#d8455c",
+  Error: "#e0703f",
+  Warning: "#e0b94f",
+  Information: "#4fa3d1",
+};
+
+function fmtTime(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return d.toLocaleString("tr-TR", {
+    day: "2-digit", month: "2-digit", year: "numeric",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+  });
+}
+
+function hoursAgo(h) {
+  return new Date(Date.now() - h * 3600 * 1000).toISOString();
+}
+
+function applyTimePreset(preset) {
+  state.timePreset = preset || "";
+  if (!preset) {
+    state.start = null;
+    state.end = null;
+    return;
+  }
+  let hours = 0;
+  if (preset.endsWith("h")) hours = parseInt(preset, 10);
+  else if (preset.endsWith("d")) hours = parseInt(preset, 10) * 24;
+  state.start = hoursAgo(hours);
+  state.end = null;
+}
+
+function buildParams(extra = {}) {
+  const params = new URLSearchParams();
+  if (state.levels) params.set("levels", state.levels);
+  else if (state.level) params.set("level", state.level);
+  if (state.log_name) params.set("log_name", state.log_name);
+  if (state.source) params.set("source", state.source);
+  if (state.event_id != null) params.set("event_id", String(state.event_id));
+  if (state.search) params.set("search", state.search);
+  if (state.error_code) params.set("error_code", state.error_code);
+  if (state.start) params.set("start", state.start);
+  if (state.end) params.set("end", state.end);
+  Object.entries(extra).forEach(([k, v]) => {
+    if (v != null && v !== "") params.set(k, v);
+  });
+  return params;
+}
+
+function eventMatchesFilters(ev) {
+  if (state.levels) {
+    const set = state.levels.split(",");
+    if (!set.includes(ev.level)) return false;
+  } else if (state.level && ev.level !== state.level) return false;
+  if (state.log_name && ev.log_name !== state.log_name) return false;
+  if (state.source && !(ev.source_name || "").toLowerCase().includes(state.source.toLowerCase())) return false;
+  if (state.event_id != null && Number(ev.event_id) !== Number(state.event_id)) return false;
+  if (state.error_code && !(ev.error_code || "").toLowerCase().includes(state.error_code.toLowerCase())) return false;
+  if (state.search) {
+    const q = state.search.toLowerCase();
+    const blob = `${ev.message || ""} ${ev.description || ""} ${ev.source_name || ""} ${ev.event_id}`.toLowerCase();
+    if (!blob.includes(q)) return false;
+  }
+  if (state.start && new Date(ev.time_created) < new Date(state.start)) return false;
+  if (state.end && new Date(ev.time_created) > new Date(state.end)) return false;
+  return true;
+}
+
+function syncFilterControls() {
+  document.getElementById("f-level").value = state.levels ? "" : (state.level || "");
+  document.getElementById("f-log").value = state.log_name || "";
+  document.getElementById("f-time").value = state.timePreset || "";
+  document.getElementById("f-search").value = state.search || "";
+  document.getElementById("f-error").value = state.error_code || "";
+
+  document.querySelectorAll(".card").forEach(c => c.classList.remove("active"));
+  if (state.card) {
+    const el = document.getElementById(`card-${state.card === "compare" ? "trend" : state.card}`);
+    if (el) el.classList.add("active");
+  }
+
+  const chips = [];
+  if (state.levels) chips.push(`Seviye: ${state.levels}`);
+  else if (state.level) chips.push(`Seviye: ${state.level}`);
+  if (state.log_name) chips.push(`Log: ${state.log_name}`);
+  if (state.source) chips.push(`Kaynak: ${state.source}`);
+  if (state.event_id != null) chips.push(`Event ID: #${state.event_id}`);
+  if (state.timePreset) chips.push(`Zaman: ${state.timePreset}`);
+  else if (state.start) chips.push(`Başlangıç: ${fmtTime(state.start)}`);
+  if (state.search) chips.push(`Arama: ${state.search}`);
+  if (state.error_code) chips.push(`Hata: ${state.error_code}`);
+  if (state.compare) chips.push("Karşılaştırma: Bugün vs Dün");
+
+  const wrap = document.getElementById("af-chips");
+  wrap.innerHTML = chips.length
+    ? chips.map(c => `<span class="af-chip">${c}</span>`).join("")
+    : `<span class="af-chip" style="border-color:var(--border);color:var(--dim);background:transparent;">filtre yok</span>`;
+
+  document.getElementById("compare-panel").classList.toggle("open", state.compare);
+}
+
+function clearFilters() {
+  state.level = "";
+  state.levels = "";
+  state.log_name = "";
+  state.source = "";
+  state.event_id = null;
+  state.search = "";
+  state.error_code = "";
+  state.timePreset = "";
+  state.start = null;
+  state.end = null;
+  state.card = null;
+  state.compare = false;
+  syncFilterControls();
+  refreshAll();
+}
+
+async function refreshAll() {
+  syncFilterControls();
+  await Promise.all([
+    loadSummary(),
+    loadTimeline(),
+    loadDayComparison(),
+    loadTopEvents(),
+    loadLogTypeChart(),
+    loadCategories(),
+    loadEvents(),
+    state.compare ? loadCompare() : Promise.resolve(),
+  ]);
+}
+
+async function loadSummary() {
+  const res = await fetch(`${API_BASE}/stats/summary?${buildParams()}`);
+  const data = await res.json();
+
+  document.getElementById("stat-total").textContent = data.total_events.toLocaleString("tr-TR");
+  document.getElementById("stat-24h").textContent = data.last_24h.toLocaleString("tr-TR");
+  document.getElementById("stat-critical").textContent = data.critical_or_error_last_24h.toLocaleString("tr-TR");
+
+  const top = data.top_recurring_events?.[0];
+  if (top) {
+    state.topEventId = top.event_id;
+    state.topEventLabel = `#${top.event_id} (${top.count}×)`;
+    document.getElementById("stat-top").textContent = state.topEventLabel;
+  } else {
+    state.topEventId = null;
+    state.topEventLabel = null;
+    document.getElementById("stat-top").textContent = "—";
+  }
+
+  renderLevelChart(data.by_level || []);
+}
+
+let levelChartInstance = null;
+function renderLevelChart(byLevel) {
+  const ctx = document.getElementById("levelChart");
+  const labels = byLevel.map(r => r.level);
+  const counts = byLevel.map(r => r.count);
+  const colors = labels.map(l => levelColors[l] || "#6b7d74");
+  if (levelChartInstance) levelChartInstance.destroy();
+  levelChartInstance = new Chart(ctx, {
+    type: "doughnut",
+    data: { labels, datasets: [{ data: counts, backgroundColor: colors, borderWidth: 0 }] },
+    options: {
+      maintainAspectRatio: false,
+      plugins: { legend: { position: "bottom", labels: { color: "#d7e0da", font: { family: "monospace", size: 11 } } } },
+      onClick: (_e, els) => {
+        if (!els.length) return;
+        const lvl = labels[els[0].index];
+        state.level = lvl;
+        state.levels = "";
+        state.card = null;
+        refreshAll();
+      },
+    },
+  });
+}
+
+let timelineChartInstance = null;
+async function loadTimeline() {
+  const hours = state.timePreset === "7d" ? 168 : state.timePreset === "30d" ? 720 : 24;
+  const bucket = hours > 48 ? "day" : "hour";
+  const res = await fetch(`${API_BASE}/stats/timeline?${buildParams({ hours, bucket })}`);
+  const { data } = await res.json();
+
+  const buckets = {};
+  (data || []).forEach(row => {
+    const t = row.bucket_time;
+    if (!buckets[t]) buckets[t] = {};
+    buckets[t][row.level] = row.count;
+  });
+
+  const sortedTimes = Object.keys(buckets).sort();
+  const levels = ["Information", "Warning", "Error", "Critical"];
+  const datasets = levels.map(lvl => ({
+    label: lvl,
+    data: sortedTimes.map(t => buckets[t][lvl] || 0),
+    borderColor: levelColors[lvl],
+    backgroundColor: levelColors[lvl] + "22",
+    fill: true,
+    tension: 0.3,
+    pointRadius: 0,
+  }));
+  const labels = sortedTimes.map(t => new Date(t).toLocaleString("tr-TR", { hour: "2-digit", day: "2-digit", month: "2-digit" }));
+
+  const ctx = document.getElementById("timelineChart");
+  if (timelineChartInstance) timelineChartInstance.destroy();
+  timelineChartInstance = new Chart(ctx, {
+    type: "line",
+    data: { labels, datasets },
+    options: {
+      maintainAspectRatio: false,
+      scales: {
+        x: { ticks: { color: "#6b7d74", font: { size: 10 } }, grid: { color: "#1f2b26" } },
+        y: { ticks: { color: "#6b7d74", font: { size: 10 } }, grid: { color: "#1f2b26" }, beginAtZero: true },
+      },
+      plugins: { legend: { position: "bottom", labels: { color: "#d7e0da", font: { family: "monospace", size: 11 } } } },
+    },
+  });
+}
+
+async function loadDayComparison() {
+  const res = await fetch(`${API_BASE}/stats/day-comparison?${buildParams()}`);
+  const d = await res.json();
+  const el = document.getElementById("stat-trend");
+  const card = document.getElementById("card-trend");
+
+  if (d.pct_change === null) {
+    el.textContent = `${d.today} (dün veri yok)`;
+  } else {
+    const arrow = d.pct_change > 0 ? "▲" : d.pct_change < 0 ? "▼" : "—";
+    el.textContent = `${arrow} ${Math.abs(d.pct_change)}% · ${d.today}/${d.yesterday}`;
+  }
+  card.classList.remove("critical", "ok");
+  if (d.pct_change != null) card.classList.add(d.pct_change > 0 ? "critical" : "ok");
+}
+
+async function loadCompare() {
+  const res = await fetch(`${API_BASE}/stats/compare?${buildParams({ period: "today_vs_yesterday" })}`);
+  const data = await res.json();
+  document.getElementById("cmp-today").textContent = (data.totals.today || 0).toLocaleString("tr-TR");
+  document.getElementById("cmp-yesterday").textContent = (data.totals.yesterday || 0).toLocaleString("tr-TR");
+
+  const todayRows = (data.breakdown || []).filter(r => r.period === "today").slice(0, 6);
+  const yestRows = (data.breakdown || []).filter(r => r.period === "yesterday").slice(0, 6);
+  document.getElementById("cmp-today-list").innerHTML = todayRows.length
+    ? todayRows.map(r => `${r.level} · ${r.log_name}: ${r.count}`).join("<br>")
+    : "kayıt yok";
+  document.getElementById("cmp-yesterday-list").innerHTML = yestRows.length
+    ? yestRows.map(r => `${r.level} · ${r.log_name}: ${r.count}`).join("<br>")
+    : "kayıt yok";
+}
+
+let topEventsChartInstance = null;
+async function loadTopEvents() {
+  const res = await fetch(`${API_BASE}/stats/top-events?${buildParams({ limit: 8 })}`);
+  const { data } = await res.json();
+  const labels = (data || []).map(r => `#${r.event_id} ${r.source_name || ""}`.trim());
+  const counts = (data || []).map(r => r.count);
+  const colors = (data || []).map(r => levelColors[r.level] || "#6b7d74");
+  const ids = (data || []).map(r => r.event_id);
+
+  const ctx = document.getElementById("topEventsChart");
+  if (topEventsChartInstance) topEventsChartInstance.destroy();
+  topEventsChartInstance = new Chart(ctx, {
+    type: "bar",
+    data: { labels, datasets: [{ data: counts, backgroundColor: colors, borderRadius: 3 }] },
+    options: {
+      indexAxis: "y",
+      maintainAspectRatio: false,
+      scales: {
+        x: { ticks: { color: "#6b7d74", font: { size: 10 } }, grid: { color: "#1f2b26" }, beginAtZero: true },
+        y: { ticks: { color: "#d7e0da", font: { family: "monospace", size: 10.5 } }, grid: { display: false } },
+      },
+      plugins: { legend: { display: false } },
+      onClick: (_e, els) => {
+        if (!els.length) return;
+        state.event_id = ids[els[0].index];
+        state.card = "top";
+        state.compare = false;
+        refreshAll();
+      },
+    },
+  });
+}
+
+let logTypeChartInstance = null;
+async function loadLogTypeChart() {
+  const res = await fetch(`${API_BASE}/stats/by-log?${buildParams()}`);
+  const { data } = await res.json();
+  const logColors = { System: "#4fa3d1", Application: "#3ecf8e", Security: "#d8455c" };
+  const labels = (data || []).map(r => r.log_name);
+  const counts = (data || []).map(r => r.count);
+  const colors = labels.map(l => logColors[l] || "#6b7d74");
+
+  const ctx = document.getElementById("logTypeChart");
+  if (logTypeChartInstance) logTypeChartInstance.destroy();
+  logTypeChartInstance = new Chart(ctx, {
+    type: "doughnut",
+    data: { labels, datasets: [{ data: counts, backgroundColor: colors, borderWidth: 0 }] },
+    options: {
+      maintainAspectRatio: false,
+      plugins: { legend: { position: "bottom", labels: { color: "#d7e0da", font: { family: "monospace", size: 11 } } } },
+      onClick: (_e, els) => {
+        if (!els.length) return;
+        state.log_name = labels[els[0].index];
+        state.card = null;
+        refreshAll();
+      },
+    },
+  });
+}
+
+async function loadSystemInfo() {
+  try {
+    const res = await fetch(`${API_BASE}/system-info`);
+    const info = await res.json();
+    document.getElementById("sys-host").textContent = info.hostname || "—";
+    document.getElementById("sys-ip").textContent = info.ip_address || "—";
+    document.getElementById("sys-mac").textContent = info.mac_address || "—";
+  } catch (_) {}
+}
+
+async function loadCategories() {
+  const res = await fetch(`${API_BASE}/stats/by-source?${buildParams({ limit: 12 })}`);
+  const { data } = await res.json();
+  const container = document.getElementById("category-chips");
+  container.innerHTML = "";
+
+  const allChip = document.createElement("div");
+  allChip.className = "chip" + (!state.source ? " active" : "");
+  allChip.textContent = "Tümü";
+  allChip.onclick = () => { state.source = ""; refreshAll(); };
+  container.appendChild(allChip);
+
+  (data || []).forEach(s => {
+    const chip = document.createElement("div");
+    chip.className = "chip" + (state.source === s.source_name ? " active" : "");
+    chip.innerHTML = `${s.source_name || "Bilinmeyen"} <span class="count">${s.count}</span>`;
+    chip.onclick = () => { state.source = s.source_name; refreshAll(); };
+    container.appendChild(chip);
+  });
+}
+
+async function loadEvents() {
+  const params = buildParams({ limit: "150" });
+  const res = await fetch(`${API_BASE}/events?${params}`);
+  const { events } = await res.json();
+  renderEventsTable(events || []);
+}
+
+function renderEventsTable(events) {
+  const tbody = document.getElementById("events-body");
+  const emptyState = document.getElementById("empty-state");
+  tbody.innerHTML = "";
+  emptyState.style.display = events.length === 0 ? "block" : "none";
+  // API DESC (yeni→eski) döner; append ile sırayı koru
+  events.forEach(ev => appendRow(ev, false));
+}
+
+function esc(s) {
+  return String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/"/g,"&quot;");
+}
+
+function buildEventRow(ev, animate) {
+  const tr = document.createElement("tr");
+  tr.addEventListener("click", () => openEventDetail(ev.id));
+  if (animate) {
+    tr.style.background = "rgba(62,207,142,0.08)";
+    setTimeout(() => { tr.style.transition = "background 1.5s"; tr.style.background = ""; }, 50);
+  }
+  const desc = ev.description || ev.message || "";
+  tr.innerHTML = `
+    <td>${fmtTime(ev.time_created)}</td>
+    <td><span class="lvl lvl-${esc(ev.level)}">${esc(ev.level)}</span></td>
+    <td>${esc(ev.category || ev.log_name || "")}</td>
+    <td>${esc(ev.event_id)}</td>
+    <td>${esc(ev.source_name || "")}</td>
+    <td>${esc(ev.error_code || "—")}</td>
+    <td class="msg-cell" title="${esc(desc)}">${esc(desc)}</td>
+  `;
+  return tr;
+}
+
+function appendRow(ev, animate) {
+  const tbody = document.getElementById("events-body");
+  tbody.appendChild(buildEventRow(ev, animate));
+  document.getElementById("empty-state").style.display = "none";
+}
+
+function prependRow(ev, animate) {
+  const tbody = document.getElementById("events-body");
+  tbody.prepend(buildEventRow(ev, animate));
+  while (tbody.children.length > 150) tbody.removeChild(tbody.lastChild);
+  document.getElementById("empty-state").style.display = "none";
+}
+
+async function openEventDetail(rowId) {
+  const res = await fetch(`${API_BASE}/events/${rowId}`);
+  const ev = await res.json();
+  if (!ev || ev.error) return;
+
+  document.getElementById("modal-title").textContent = `Event #${ev.event_id} — ${ev.source_name || "Bilinmeyen"}`;
+  document.getElementById("modal-detail-grid").innerHTML = `
+    <div class="k">Zaman</div><div class="v">${fmtTime(ev.time_created)}</div>
+    <div class="k">Seviye</div><div class="v"><span class="lvl lvl-${esc(ev.level)}">${esc(ev.level)}</span></div>
+    <div class="k">Kategori</div><div class="v">${esc(ev.category || "—")}</div>
+    <div class="k">Log</div><div class="v">${esc(ev.log_name)}</div>
+    <div class="k">Event ID</div><div class="v">${esc(ev.event_id)}</div>
+    <div class="k">Kaynak</div><div class="v">${esc(ev.source_name || "—")}</div>
+    <div class="k">Task</div><div class="v">${esc(ev.task || "—")}</div>
+    <div class="k">Opcode</div><div class="v">${esc(ev.opcode || "—")}</div>
+    <div class="k">Hata Kodu</div><div class="v">${esc(ev.error_code || "—")}</div>
+    <div class="k">Keywords</div><div class="v">${esc(ev.keywords || "—")}</div>
+    <div class="k">Bilgisayar</div><div class="v">${esc(ev.computer_name || "—")}</div>
+    <div class="k">User SID</div><div class="v">${esc(ev.user_sid || "—")}</div>
+    <div class="k">Record ID</div><div class="v">${esc(ev.record_id ?? "—")}</div>
+    <div class="k">Kaydedilme</div><div class="v">${fmtTime(ev.inserted_at)}</div>
+  `;
+  document.getElementById("modal-description").textContent = ev.description || "(açıklama yok)";
+  document.getElementById("modal-message").textContent = ev.message || "(mesaj yok)";
+  document.getElementById("modal-xml").textContent = ev.raw_xml || "(xml yok)";
+  document.getElementById("modal-overlay").classList.add("open");
+}
+
+function closeModal() {
+  document.getElementById("modal-overlay").classList.remove("open");
+}
+
+document.getElementById("modal-close").addEventListener("click", closeModal);
+document.getElementById("modal-overlay").addEventListener("click", (e) => {
+  if (e.target.id === "modal-overlay") closeModal();
+});
+document.getElementById("af-clear").addEventListener("click", clearFilters);
+
+document.querySelectorAll(".card[data-card]").forEach(card => {
+  card.addEventListener("click", () => {
+    const kind = card.dataset.card;
+
+    if (kind === "total") {
+      state.level = "";
+      state.levels = "";
+      state.log_name = "";
+      state.source = "";
+      state.event_id = null;
+      state.search = "";
+      state.error_code = "";
+      state.timePreset = "";
+      state.start = null;
+      state.end = null;
+      state.compare = false;
+      state.card = "total";
+    } else if (kind === "24h") {
+      state.compare = false;
+      state.levels = "";
+      state.level = state.level;
+      applyTimePreset("24h");
+      state.card = "24h";
+    } else if (kind === "critical") {
+      state.compare = false;
+      state.levels = "Critical,Error";
+      state.level = "";
+      applyTimePreset("24h");
+      state.card = "critical";
+    } else if (kind === "top") {
+      if (state.topEventId == null) return;
+      state.compare = false;
+      state.event_id = state.topEventId;
+      state.card = "top";
+    } else if (kind === "compare") {
+      state.compare = true;
+      state.card = "compare";
+      applyTimePreset("24h");
+    }
+
+    refreshAll();
+  });
+});
+
+document.getElementById("f-level").addEventListener("change", (e) => {
+  state.level = e.target.value;
+  state.levels = "";
+  state.card = null;
+  refreshAll();
+});
+document.getElementById("f-log").addEventListener("change", (e) => {
+  state.log_name = e.target.value;
+  state.card = null;
+  refreshAll();
+});
+document.getElementById("f-time").addEventListener("change", (e) => {
+  applyTimePreset(e.target.value);
+  state.card = null;
+  refreshAll();
+});
+
+let searchTimeout;
+document.getElementById("f-search").addEventListener("input", (e) => {
+  clearTimeout(searchTimeout);
+  searchTimeout = setTimeout(() => {
+    state.search = e.target.value.trim();
+    state.card = null;
+    refreshAll();
+  }, 350);
+});
+document.getElementById("f-error").addEventListener("input", (e) => {
+  clearTimeout(searchTimeout);
+  searchTimeout = setTimeout(() => {
+    state.error_code = e.target.value.trim();
+    state.card = null;
+    refreshAll();
+  }, 350);
+});
+
+function connectWebSocket() {
+  const ws = new WebSocket(WS_URL);
+  const dot = document.getElementById("conn-dot");
+  const text = document.getElementById("conn-text");
+
+  ws.onopen = () => {
+    dot.classList.add("live");
+    text.textContent = "canlı";
+  };
+
+  ws.onclose = () => {
+    dot.classList.remove("live");
+    text.textContent = "bağlantı koptu, yeniden deneniyor...";
+    setTimeout(connectWebSocket, 2500);
+  };
+
+  ws.onmessage = (event) => {
+    const msg = JSON.parse(event.data);
+    if (msg.type !== "new_event") return;
+    const ev = msg.data;
+
+    if (eventMatchesFilters(ev)) {
+      prependRow(ev, true);
+    }
+
+    // Kartlar + grafikler canlı güncellensin
+    loadSummary();
+    loadDayComparison();
+    loadTopEvents();
+    loadLogTypeChart();
+    loadTimeline();
+    loadCategories();
+    if (state.compare) loadCompare();
+  };
+}
+
+loadSystemInfo();
+refreshAll();
+connectWebSocket();
+setInterval(() => {
+  loadSummary();
+  loadDayComparison();
+}, 20000);
+</script>
+
+</body>
+</html>
