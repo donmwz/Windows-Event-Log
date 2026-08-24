@@ -1,96 +1,87 @@
 # Windows Event Log
 
-Windows Event Log kayıtlarını toplayıp PostgreSQL’de saklayan ve canlı bir dashboard üzerinden izlemenizi sağlayan sistem.
+Windows Event Log kayıtlarını toplayıp **gömülü SQLite**’ta saklayan ve canlı dashboard üzerinden izlemenizi sağlayan sistem.
 
 ## Mimari
 
 ```
-Windows Event Logs          Collector              PostgreSQL           FastAPI + Dashboard
-(System / App / Security) → collector.py      →   event_monitor    →   main.py + static/
-                            (her 5 sn)              (Docker)            REST + WebSocket
+Windows Event Logs          Collector              SQLite              FastAPI + Dashboard
+(System / App / Security) → collector.py      →   data/events.db  →   main.py + static/
+                            (her 5 sn)                                 REST + WebSocket
 ```
 
 | Bileşen | Dosya | Görev |
 |---------|--------|--------|
-| Veritabanı | `docker-compose.yml`, `init.sql` | Postgres 16, `events` tablosu |
+| Veritabanı | `database.py`, `schema_sqlite.sql` | Gömülü SQLite (`data/events.db`) |
 | Toplayıcı | `collector.py` | Event Log okur, DB’ye yazar |
-| API | `main.py`, `database.py` | REST + WebSocket |
+| API | `main.py` | REST + WebSocket |
 | Arayüz | `static/index.html` | Canlı dashboard |
+| Launcher | `launcher.py` | Tek tıkla hepsini başlatır |
 
 ## Özellikler
 
 - System, Application, Security loglarını izleme
 - Tam event içeriği: zaman, seviye, kategori, kaynak, Event ID, hata kodu, açıklama, mesaj, raw XML
 - Filtreleme: seviye, log türü, zaman aralığı, arama, hata kodu, kaynak
-- Özet kartları (tıklanabilir filtre / karşılaştırma)
-- Grafikler: zaman çizelgesi, seviye, top event, log dağılımı
-- WebSocket ile gerçek zamanlı güncelleme
+- Özet kartları, grafikler, WebSocket canlı güncelleme
 - Bugün vs dün karşılaştırması
+- Docker **gerekmez**
 
 ## Gereksinimler
 
 - Windows 10/11
-- Python 3.11+
-- Docker Desktop
+- Python 3.11+ (yalnızca geliştirme / paket üretimi)
 - Security log için Yönetici yetkisi
 
-## Kurulum
+## Farklı PC’ye kurulum (exe / setup)
+
+### 1) Bu PC’de paketi üret
+
+```powershell
+cd "Windows Event Log"
+.\build.ps1
+```
+
+Çıktılar:
+- **Portable:** `dist\WindowsEventLog\` (zip/USB ile taşı)
+- **Setup.exe:** Inno Setup kuruluysa `dist\WindowsEventLog-Setup.exe`
+
+### 2) Hedef PC’de
+
+1. `WindowsEventLog.exe` çalıştır (veya Setup ile kur)
+2. Tarayıcı: http://127.0.0.1:8000
+3. Security için exe’yi **Yönetici olarak çalıştır**
+
+Ayarlar: `config.ini` (port, DB yolu). Veriler: `data\events.db`
+
+## Geliştirme
 
 ```powershell
 cd "Windows Event Log"
 python -m venv venv
 .\venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+python launcher.py
 ```
 
-## Başlatma
-
-Sıra: **1) DB → 2) API → 3) Collector**
-
-### 1. PostgreSQL
+Veya ayrı ayrı:
 
 ```powershell
-docker compose up -d
-```
-
-İlk kurulumda `init.sql` otomatik uygulanır.  
-Mevcut bir volume varsa şema güncellemesi için:
-
-```powershell
-Get-Content -Raw .\migrate.sql | docker exec -i event_monitor_db psql -U event_admin -d event_monitor
-```
-
-### 2. API / Dashboard
-
-```powershell
-.\venv\Scripts\Activate.ps1
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
-```
-
-Dashboard: http://localhost:8000
-
-### 3. Collector
-
-**Ayrı bir terminalde** (Security için Yönetici olarak):
-
-```powershell
-.\venv\Scripts\Activate.ps1
+python -m uvicorn main:app --host 127.0.0.1 --port 8000
 python collector.py
 ```
 
-Collector kapalıyken yeni event’ler DB’ye yazılmaz. Yeniden açılınca DB’deki son kayıttan devam eder.
+## config.ini
 
-## Veritabanı ayarları
+```ini
+[database]
+path = data/events.db
 
-Varsayılan değerler (`docker-compose.yml`, `collector.py`, `database.py` ile aynı olmalı):
-
-| Alan | Değer |
-|------|--------|
-| Host | `localhost` |
-| Port | `5432` |
-| DB | `event_monitor` |
-| User | `event_admin` |
-| Password | `change_this_password` |
+[app]
+host = 127.0.0.1
+port = 8000
+open_browser = true
+```
 
 ## API özeti
 
@@ -108,29 +99,8 @@ Varsayılan değerler (`docker-compose.yml`, `collector.py`, `database.py` ile a
 | `GET /system-info` | Host / IP / MAC |
 | `WS /ws/live` | Canlı event push |
 
-## Dashboard kullanımı
-
-- Üstteki kartlara tıklayınca ilgili filtre veya karşılaştırma uygulanır
-- Grafik dilimlerine / barlarına tıklayınca filtre uygulanır
-- Aktif filtre çubuğundan **Temizle** ile sıfırlanır
-- Header’da **canlı** yazıyorsa WebSocket bağlıdır
-- Satıra tıklayınca detay modalı açılır (açıklama, mesaj, XML)
-
 ## Bilinen notlar
 
-- `Security` logu için collector **Yönetici** olarak çalışmalı; aksi halde `Erişim engellendi` hatası alınır
+- `Security` logu için collector / exe **Yönetici** olarak çalışmalı
 - System / Application için admin gerekmez
-- Üretimde `change_this_password` değerini mutlaka değiştirin
-- CORS şu an açıktır (`allow_origins=["*"]`); kurumsal ortamda kısıtlayın
-
-## Bağımlılıklar
-
-```
-pywin32
-psycopg2-binary
-python-dotenv
-fastapi
-uvicorn[standard]
-```
-
-`requirements.txt` dosyasından yüklenir.
+- Eski Postgres/Docker dosyaları (`docker-compose.yml`, `init.sql`, `migrate.sql`) artık kullanılmaz; silinebilir

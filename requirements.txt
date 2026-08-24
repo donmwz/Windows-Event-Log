@@ -1,5 +1,4 @@
 pywin32
-psycopg2-binary
-python-dotenv
 fastapi
 uvicorn[standard]
+pyinstaller>=6.0

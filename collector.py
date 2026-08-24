@@ -8,8 +8,8 @@ from datetime import datetime, timezone
 import win32evtlog
 import win32security
 import win32api
-import psycopg2
-from psycopg2.extras import execute_values
+
+from database import get_connection, init_db
 
 LOG_NAMES = ["System", "Application", "Security"]
 POLL_INTERVAL_SECONDS = 5
@@ -18,14 +18,6 @@ CATEGORY_MAP = {
     "System": "Sistem",
     "Application": "Uygulama",
     "Security": "Güvenlik",
-}
-
-DB_CONFIG = {
-    "host": "localhost",
-    "port": 5432,
-    "dbname": "event_monitor",
-    "user": "event_admin",
-    "password": "change_this_password",
 }
 
 LEVEL_MAP = {
@@ -58,8 +50,28 @@ def enable_security_privilege():
         logger.warning(f"SeSecurityPrivilege etkinlestirilemedi: {e}")
 
 
-def get_connection():
-    return psycopg2.connect(**DB_CONFIG)
+def _to_iso(dt: datetime) -> str:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _parse_iso(value) -> datetime:
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+    text = str(value).replace("Z", "+00:00")
+    if "T" in text:
+        try:
+            dt = datetime.fromisoformat(text)
+        except ValueError:
+            dt = datetime.strptime(text[:19], "%Y-%m-%dT%H:%M:%S")
+    else:
+        dt = datetime.strptime(text[:19], "%Y-%m-%d %H:%M:%S")
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 def insert_events(conn, events: list[dict]):
@@ -67,13 +79,11 @@ def insert_events(conn, events: list[dict]):
         return
 
     query = """
-        INSERT INTO events
+        INSERT OR IGNORE INTO events
             (event_id, log_name, category, source_name, level, task, opcode,
              keywords, error_code, computer_name, user_sid, record_id,
              time_created, description, message, raw_xml)
-        VALUES %s
-        ON CONFLICT (event_id, log_name, computer_name, time_created)
-        DO NOTHING
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
     values = [
         (
@@ -89,7 +99,7 @@ def insert_events(conn, events: list[dict]):
             e["computer_name"],
             e["user_sid"],
             e["record_id"],
-            e["time_created"],
+            _to_iso(e["time_created"]) if isinstance(e["time_created"], datetime) else e["time_created"],
             e["description"],
             e["message"],
             e["raw_xml"],
@@ -97,8 +107,7 @@ def insert_events(conn, events: list[dict]):
         for e in events
     ]
 
-    with conn.cursor() as cur:
-        execute_values(cur, query, values)
+    conn.executemany(query, values)
     conn.commit()
     logger.info(f"{len(values)} event veritabanina yazildi.")
 
@@ -275,20 +284,16 @@ def get_resume_time(conn) -> datetime:
     Collector kapaliyken gelen event'ler kacmasin.
     Tablo bossa 'simdi'den basla.
     """
-    with conn.cursor() as cur:
-        cur.execute("SELECT MAX(time_created) FROM events")
-        row = cur.fetchone()
-    if row and row[0] is not None:
-        ts = row[0]
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
-        return ts
+    row = conn.execute("SELECT MAX(time_created) AS max_ts FROM events").fetchone()
+    if row and row["max_ts"] is not None:
+        return _parse_iso(row["max_ts"])
     return datetime.now(timezone.utc)
 
 
 def main():
     logger.info("Collector baslatiliyor...")
     enable_security_privilege()
+    init_db()
     conn = get_connection()
 
     last_check_time = get_resume_time(conn)

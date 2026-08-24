@@ -2,14 +2,15 @@ import asyncio
 import socket
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
-from database import get_db_cursor
+from database import get_db_cursor, init_db
+from paths import static_dir
 
 app = FastAPI(title="Windows Event Log")
 
@@ -19,6 +20,26 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+_STATIC = static_dir()
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _iso(dt: datetime) -> str:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _as_iso(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
 
 
 @app.get("/system-info")
@@ -42,15 +63,11 @@ def get_system_info():
 
 @app.get("/")
 def serve_dashboard():
-    return FileResponse("static/index.html")
+    return FileResponse(_STATIC / "index.html")
 
 
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
 
-
-# --------------------------------------------------------------------------
-# Ortak filtre yardimcilari (tum dashboard sorgularinda kullanilir)
-# --------------------------------------------------------------------------
 
 def build_event_filters(
     level: Optional[str] = None,
@@ -84,26 +101,26 @@ def build_event_filters(
         conditions.append("category = %s")
         params.append(category)
     if source:
-        conditions.append("source_name ILIKE %s")
+        conditions.append("source_name LIKE %s")
         params.append(f"%{source}%")
     if event_id is not None:
         conditions.append("event_id = %s")
         params.append(event_id)
     if error_code:
-        conditions.append("error_code ILIKE %s")
+        conditions.append("error_code LIKE %s")
         params.append(f"%{error_code}%")
     if search:
         conditions.append(
-            "(message ILIKE %s OR description ILIKE %s OR source_name ILIKE %s OR CAST(event_id AS TEXT) ILIKE %s)"
+            "(message LIKE %s OR description LIKE %s OR source_name LIKE %s OR CAST(event_id AS TEXT) LIKE %s)"
         )
         like = f"%{search}%"
         params.extend([like, like, like, like])
     if start:
         conditions.append("time_created >= %s")
-        params.append(start)
+        params.append(_iso(start) if isinstance(start, datetime) else start)
     if end:
         conditions.append("time_created <= %s")
-        params.append(end)
+        params.append(_iso(end) if isinstance(end, datetime) else end)
 
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     return where_clause, params
@@ -188,6 +205,7 @@ def get_summary(
         level, levels, log_name, category, source, event_id, search, error_code, start, end
     )
     and_prefix = " AND " if where_clause else " WHERE "
+    since_24h = _iso(_utc_now() - timedelta(hours=24))
 
     with get_db_cursor() as cur:
         cur.execute(f"SELECT COUNT(*) as total FROM events {where_clause}", params)
@@ -208,9 +226,9 @@ def get_summary(
         cur.execute(
             f"""
             SELECT COUNT(*) as count FROM events
-            {where_clause}{and_prefix}time_created >= NOW() - INTERVAL '24 hours'
+            {where_clause}{and_prefix}time_created >= %s
             """,
-            params,
+            params + [since_24h],
         )
         last_24h = cur.fetchone()["count"]
 
@@ -218,9 +236,9 @@ def get_summary(
             f"""
             SELECT COUNT(*) as count FROM events
             {where_clause}{and_prefix}level IN ('Critical', 'Error')
-              AND time_created >= NOW() - INTERVAL '24 hours'
+              AND time_created >= %s
             """,
-            params,
+            params + [since_24h],
         )
         critical_last_24h = cur.fetchone()["count"]
 
@@ -261,25 +279,30 @@ def get_timeline(
     start: Optional[datetime] = None,
     end: Optional[datetime] = None,
 ):
-    trunc_unit = "hour" if bucket == "hour" else "day"
     where_clause, params = build_event_filters(
         level, levels, log_name, category, source, event_id, search, error_code, start, end
     )
     and_prefix = " AND " if where_clause else " WHERE "
+    since = _iso(_utc_now() - timedelta(hours=int(hours)))
+
+    if bucket == "hour":
+        bucket_expr = "strftime('%Y-%m-%dT%H:00:00', time_created)"
+    else:
+        bucket_expr = "strftime('%Y-%m-%dT00:00:00', time_created)"
 
     query = f"""
         SELECT
-            date_trunc('{trunc_unit}', time_created) as bucket_time,
+            {bucket_expr} as bucket_time,
             level,
             COUNT(*) as count
         FROM events
-        {where_clause}{and_prefix}time_created >= NOW() - INTERVAL '{int(hours)} hours'
+        {where_clause}{and_prefix}time_created >= %s
         GROUP BY bucket_time, level
         ORDER BY bucket_time ASC
     """
 
     with get_db_cursor() as cur:
-        cur.execute(query, params)
+        cur.execute(query, params + [since])
         rows = cur.fetchall()
 
     return {"bucket": bucket, "hours": hours, "data": rows}
@@ -359,22 +382,22 @@ def get_day_comparison(
     where_clause, params = build_event_filters(
         level, levels, log_name, category, source, event_id, search, error_code, None, None
     )
+    since_24h = _iso(_utc_now() - timedelta(hours=24))
+    since_48h = _iso(_utc_now() - timedelta(hours=48))
 
     query = f"""
         SELECT
-            COUNT(*) FILTER (
-                WHERE time_created >= NOW() - INTERVAL '24 hours'
-            ) as today,
-            COUNT(*) FILTER (
-                WHERE time_created >= NOW() - INTERVAL '48 hours'
-                  AND time_created < NOW() - INTERVAL '24 hours'
-            ) as yesterday
+            SUM(CASE WHEN time_created >= %s THEN 1 ELSE 0 END) as today,
+            SUM(CASE
+                WHEN time_created >= %s AND time_created < %s THEN 1
+                ELSE 0
+            END) as yesterday
         FROM events
         {where_clause}
     """
 
     with get_db_cursor() as cur:
-        cur.execute(query, params)
+        cur.execute(query, [since_24h, since_48h, since_24h] + params)
         row = cur.fetchone()
 
     today = row["today"] or 0
@@ -385,9 +408,9 @@ def get_day_comparison(
         "today": today,
         "yesterday": yesterday,
         "pct_change": pct_change,
-        "today_start": (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat(),
-        "yesterday_start": (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat(),
-        "yesterday_end": (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat(),
+        "today_start": (_utc_now() - timedelta(hours=24)).isoformat(),
+        "yesterday_start": (_utc_now() - timedelta(hours=48)).isoformat(),
+        "yesterday_end": (_utc_now() - timedelta(hours=24)).isoformat(),
     }
 
 
@@ -403,25 +426,25 @@ def get_compare(
     search: Optional[str] = None,
     error_code: Optional[str] = None,
 ):
-    """Iki donemi seviye ve log bazinda karsilastirir."""
     where_clause, params = build_event_filters(
         level, levels, log_name, category, source, event_id, search, error_code, None, None
     )
     and_prefix = " AND " if where_clause else " WHERE "
+    since_24h = _iso(_utc_now() - timedelta(hours=24))
+    since_48h = _iso(_utc_now() - timedelta(hours=48))
 
     query = f"""
         SELECT period, level, log_name, COUNT(*) as count
         FROM (
             SELECT
                 CASE
-                    WHEN time_created >= NOW() - INTERVAL '24 hours' THEN 'today'
-                    WHEN time_created >= NOW() - INTERVAL '48 hours'
-                         AND time_created < NOW() - INTERVAL '24 hours' THEN 'yesterday'
+                    WHEN time_created >= %s THEN 'today'
+                    WHEN time_created >= %s AND time_created < %s THEN 'yesterday'
                 END as period,
                 level,
                 log_name
             FROM events
-            {where_clause}{and_prefix}time_created >= NOW() - INTERVAL '48 hours'
+            {where_clause}{and_prefix}time_created >= %s
         ) t
         WHERE period IS NOT NULL
         GROUP BY period, level, log_name
@@ -429,21 +452,21 @@ def get_compare(
     """
 
     with get_db_cursor() as cur:
-        cur.execute(query, params)
+        cur.execute(query, [since_24h, since_48h, since_24h] + params + [since_48h])
         rows = cur.fetchall()
 
         cur.execute(
             f"""
             SELECT
-                COUNT(*) FILTER (WHERE time_created >= NOW() - INTERVAL '24 hours') as today,
-                COUNT(*) FILTER (
-                    WHERE time_created >= NOW() - INTERVAL '48 hours'
-                      AND time_created < NOW() - INTERVAL '24 hours'
-                ) as yesterday
+                SUM(CASE WHEN time_created >= %s THEN 1 ELSE 0 END) as today,
+                SUM(CASE
+                    WHEN time_created >= %s AND time_created < %s THEN 1
+                    ELSE 0
+                END) as yesterday
             FROM events
             {where_clause}
             """,
-            params,
+            [since_24h, since_48h, since_24h] + params,
         )
         totals = cur.fetchone()
 
@@ -487,10 +510,6 @@ def get_by_source(
         rows = cur.fetchall()
     return {"data": rows}
 
-
-# --------------------------------------------------------------------------
-# WEBSOCKET — gercek zamanli push
-# --------------------------------------------------------------------------
 
 class ConnectionManager:
     def __init__(self):
@@ -554,12 +573,13 @@ async def poll_and_broadcast_new_events():
         if new_rows:
             last_sent_id = max(row["id"] for row in new_rows)
             for row in new_rows:
-                row["time_created"] = row["time_created"].isoformat()
+                row["time_created"] = _as_iso(row["time_created"])
                 if row.get("inserted_at"):
-                    row["inserted_at"] = row["inserted_at"].isoformat()
+                    row["inserted_at"] = _as_iso(row["inserted_at"])
                 await manager.broadcast({"type": "new_event", "data": row})
 
 
 @app.on_event("startup")
 async def startup_event():
+    init_db()
     asyncio.create_task(poll_and_broadcast_new_events())
